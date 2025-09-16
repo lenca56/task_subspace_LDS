@@ -126,7 +126,7 @@ class task_subspace_LDS():
         # C = jr.normal(key_C, (self.D,self.D))
         # C, _ = jnp.linalg.qr(C)  # QR decomposition, Q is the orthogonal matrix
         # C = C[:self.K,:].T
-        C = jr.orthogonal(key_C, self.D, (self.D,self.K))
+        C = jr.orthogonal(key_C, self.D)[:,:(self.K1+self.K2)]
         
         d = jr.normal(key_d, (self.D,)) + 2
         
@@ -142,25 +142,79 @@ class task_subspace_LDS():
         mu0 = jr.normal(key_mu0, (self.K,)) * 0.1 ** 2
         
         return  B, Q, mu0, Q0, C, d, R
+    
+#     def generate_latents_and_observations(self, key, u, A, B, Q, mu0, Q0, C, d, R):
+                                          
+#                                           params, key, inputs_tuple):
+#         ''' 
+#         Parameters:
+        
+#         '''
+# #         T = u.shape[0] # number of time points
+# #         key_x0, key_y0, key_scan = jr.split(key, 3)
 
-    def generate_latents_and_observations(self, key, S, T, u, A, B, Q, mu0, Q0, C, d, R):
-        ''' 
-        Parameters
-        ----------
-        S: number of trials/sessions
-        T: number of time points in trial/session
-        '''
+# #         x0 = self.initial_distribution(params, (u[0], w[0])).sample(seed=key_x0)
+# #         y0 = self.emission_distribution(params, x0, (u[0], w[0])).sample(seed=key_y0)
 
-        x = np.zeros((S, T, self.K))
-        y = np.zeros((S, T, self.D))
+# #         step_keys = jr.split(key_scan, T - 1)
+# #         U = u[1:]        # (T-1, …)
+# #         W = w[1:]        # (T-1, …)
 
-        for s in range(S):
-            x[s, 0] = np.random.multivariate_normal(mu0.flatten(), Q0)
-            y[s, 0] = np.random.multivariate_normal((C @ x[s, 0] + d).reshape(self.D), R)
-            for i in range(1, T):
-                x[s, i] = np.random.multivariate_normal((A @ x[s, i-1] + B @ u[s,i-1]).reshape((self.K)), Q)
-                y[s, i] = np.random.multivariate_normal((C @ x[s, i] + d).reshape(self.D), R)
+# #         def one_time_step(x_prev, data_t):
+# #             key_t, u_t, w_t = data_t
+# #             k1, k2 = jr.split(key_t, 2)
+# #             x_t = self.transition_distribution(params, x_prev, (u_t, w_t)).sample(seed=k2)
+# #             y_t = self.emission_distribution(params, x_t, (u_t, w_t)).sample(seed=k1)
+# #             return x_t, (x_t, y_t)
+
+# #         _, (xs_1T, ys_1T) = lax.scan(step, x0, (step_keys, U, W))
+# #         states    = jnp.concatenate([x0[None, ...], xs_1T], axis=0)
+# #         emissions = jnp.concatenate([y0[None, ...], ys_1T], axis=0)
+        
+# #         return states, emissions
+
+#     def generate_latents_and_observations(self, key, S, T, u, A, B, Q, mu0, Q0, C, d, R):
+#         ''' 
+#         Parameters
+#         ----------
+#         S: number of trials/sessions
+#         T: number of time points in trial/session
+#         '''
+        
+        
+#         x = np.zeros((S, T, self.K))
+#         y = np.zeros((S, T, self.D))
+        
+#         key_x0, key_y0 = jr.split(key, num=2)
+
+#         # for s in range(S):
+#         #     x[s, 0] = np.random.multivariate_normal(mu0.flatten(), Q0)
+#         #     y[s, 0] = np.random.multivariate_normal((C @ x[s, 0] + d).reshape(self.D), R)
+# #             for i in range(1, T):
+# #                 x[s, i] = np.random.multivariate_normal((A @ x[s, i-1] + B @ u[s,i-1]).reshape((self.K)), Q)
+# #                 y[s, i] = np.random.multivariate_normal((C @ x[s, i] + d).reshape(self.D), R)
+        
+#         # first emission
+#         x0 = jr.multivariate_normal(key_x0, mu0, Q0)
+#         y0 = jr.multivariate_normal(key_x0, C @ x0 + d, R)
+        
+#         def step(x_prev, u_prev, key_step):
+#             key_x, key_y = jr.split(key_step, num=2)
+#             x_current = jr.multivariate_normal(key_x, A @ x_prev + B @ u_prev, Q)
+#             y_current = jr.multivariate_normal(key_y, C @ x_current + d, R)
+#             return x_current, (x_current, y_current)
+        
+#         _, (xs, ys) = lax.scan(step, init=0, xs=u)
+            
                 
-        return x, y
+#         		def body(carry, input_t):
+# 		    # carry_t is a state at time t
+# 		    new_carry = carry + x_t         # what moves forward to next step
+# 		    out_t = carry * 2               # what we *record* for this step
+# 		    return new_carry, out_t
+		
+# carry_T, outs = lax.scan(body,  carry_0=0,  inputs=jnp.array([1,2,3]))
+
+#         return x, y
 
         
