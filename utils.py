@@ -1,8 +1,7 @@
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 from jax import jit, vmap
-import jax
-jax.config.update("jax_enable_x64", True)
 
 def compare_as_sets(a, b, tol=1e-12):
     """
@@ -86,7 +85,8 @@ def generate_dynamics_A(key, eigenvalues, normal=True, distr='normal'):
             A = Q @ D @ Q.T
         else:
             raise Exception('Non-normal A hasnt been considered yet')
-#         else:
+
+            #         else:
 #             # add values on off diagonal of D to increase non-normality
 #             num_off_diag = np.random.uniform(0,1) 
 #             # to get up to maximum number of potential off diagonal terms

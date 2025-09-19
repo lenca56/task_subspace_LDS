@@ -1,8 +1,8 @@
+import jax
+jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import jax.random as jr
 import jax.scipy as jsci
-import jax
-jax.config.update("jax_enable_x64", True)
 import utils
 
 class task_subspace_LDS():
@@ -126,7 +126,7 @@ class task_subspace_LDS():
         # C = jr.normal(key_C, (self.D,self.D))
         # C, _ = jnp.linalg.qr(C)  # QR decomposition, Q is the orthogonal matrix
         # C = C[:self.K,:].T
-        C = jr.orthogonal(key_C, self.D, (self.D,self.K))
+        C = jr.orthogonal(key_C, self.D)[:,:(self.K1+self.K2)]
         
         d = jr.normal(key_d, (self.D,)) + 2
         
@@ -142,5 +142,184 @@ class task_subspace_LDS():
         mu0 = jr.normal(key_mu0, (self.K,)) * 0.1 ** 2
         
         return  B, Q, mu0, Q0, C, d, R
+    
+    def fit_EM(self, u, y, init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R, max_iter=300, verbosity=0):
+        
+        S = y.shape[0]
+        T = y.shape[1]
+        
+#         # marginal log likelihood 
+#         ecll_old = np.zeros((max_iter))
+#         ecll_new = np.zeros((max_iter))
+#         elbo = np.zeros((max_iter))
+#         ll = np.zeros((max_iter, S))
+
+        for iter in range(max_iter):
+            if iter % 100 == 0:
+                print(iter)
+
+            # E-step
+            mu, mu_prior, V, V_prior, _ = Kalman_filter_E_step_batches(y, u, A, B, Q, mu0, Q0, C, d, R)
+            m, cov, cov_successive = Kalman_smoother_E_step_batches(A, mu, mu_prior, V, V_prior)
+            
+#             ecll_old[iter], elbo[iter] = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
+            
+            # M-step 
+            A, B, Q, mu0, Q0, C, d, R = modified_M_step(self.K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_successive, max_iter_C=50, verbosity=0)
+
+#             ecll_new[iter], _ = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
+
+#             # check for convergence
+#             if iter >= 1:
+#                 if np.abs((elbo[iter] - elbo[iter-1])/elbo[iter-1]) < 0.000001:
+#                     elbo[iter:] = elbo[iter]
+#                     ll[iter:] = ll[iter]
+#                     ecll_old[iter:] = ecll_old[iter]
+#                     ecll_new[iter:] = ecll_new[iter]
+
+#                     break
+
+        # # compute loss and ecll and ll after last iteration
+        # m = np.zeros((S, T, self.K))
+        # cov = np.zeros((S, T, self.K, self.K))
+        # cov_next = np.zeros((S, T-1, self.K, self.K))
+        # for s in range(S): # iterate across all trials
+        #     # E-step
+        #     mu, mu_prior, V, V_prior, ll[-1, s] = self.Kalman_filter_E_step(y[s], u[s], A, B, Q , mu0, Q0, C, d, R)
+        #     m[s], cov[s], cov_next[s] = self.Kalman_smoother_E_step(A, mu, mu_prior, V, V_prior)
+        # ecll_old[-1], elbo[-1] = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
+         
+            # ecll_new, ecll_old, elbo, ll,
+        return A, B, Q , mu0, Q0, C, d, R
+    
+        # ecll = np.zeros(max_iter + 1)
+        # elbo = np.zeros(max_iter + 1)
+        # ll   = np.zeros((max_iter + 1, S))      # per-trial ll (kept for inspection)
+        # ll_total = np.zeros(max_iter + 1)       # per-iteration total ll
+
+        # for it in range(max_iter):
+        #     if it % 10 == 0:
+        #         print(it)
+
+        #     # E-step (current θ): run filter/smoother for every trial
+        #     m = np.zeros((S, T, self.K))
+        #     cov = np.zeros((S, T, self.K, self.K))
+        #     cov_next = np.zeros((S, T-1, self.K, self.K))
+
+        #     for s in range(S):
+        #         mu, mu_prior, V, V_prior, ll[it, s] = self.Kalman_filter_E_step(
+        #             y[s], u[s], A, B, Q, mu0, Q0, C, d, R
+        #         )
+        #         m[s], cov[s], cov_next[s] = self.Kalman_smoother_E_step(A, mu, mu_prior, V, V_prior)
+
+        #     # totals for this θ (BEFORE M-step)
+        #     ll_total[it] = ll[it].sum()
+
+        #     # ECLL for this same θ
+        #     ecll[it], _ = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
+
+        #     # Exact E-step ⇒ ELBO must equal marginal LL. Use identity to avoid entropy bugs.
+        #     elbo[it] = ll_total[it]
+
+        #     # (Optional: assert the equality numerically to catch issues early)
+        #     # diff = ll_total[it] - ecll[it]
+        #     # if np.abs(diff) > 1e-3:
+        #     #     print(f"[warn] |LL - ECLL| = {diff:.3e} (expected to be entropy)")
+
+        #     # M-step: update θ
+        #     A, B, Q, mu0, Q0, C, d, R = self.modified_M_step(
+        #         u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next, verbosity=verbosity
+        #     )
+
+        # # Final E-step after last update to populate the (+1)-th slot
+        # m = np.zeros((S, T, self.K))
+        # cov = np.zeros((S, T, self.K, self.K))
+        # cov_next = np.zeros((S, T-1, self.K, self.K))
+        # for s in range(S):
+        #     mu, mu_prior, V, V_prior, ll[-1, s] = self.Kalman_filter_E_step(
+        #         y[s], u[s], A, B, Q, mu0, Q0, C, d, R
+        #     )
+        #     m[s], cov[s], cov_next[s] = self.Kalman_smoother_E_step(A, mu, mu_prior, V, V_prior)
+
+        # ll_total[-1] = ll[-1].sum()
+        # ecll[-1], _ = self.compute_ECLL(u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_next)
+        # elbo[-1] = ll_total[-1]
+
+        # return ecll, elbo, ll_total, A, B, Q, mu0, Q0, C, d, R
+
+    
+#     def generate_latents_and_observations(self, key, u, A, B, Q, mu0, Q0, C, d, R):
+                                          
+#                                           params, key, inputs_tuple):
+#         ''' 
+#         Parameters:
+        
+#         '''
+# #         T = u.shape[0] # number of time points
+# #         key_x0, key_y0, key_scan = jr.split(key, 3)
+
+# #         x0 = self.initial_distribution(params, (u[0], w[0])).sample(seed=key_x0)
+# #         y0 = self.emission_distribution(params, x0, (u[0], w[0])).sample(seed=key_y0)
+
+# #         step_keys = jr.split(key_scan, T - 1)
+# #         U = u[1:]        # (T-1, …)
+# #         W = w[1:]        # (T-1, …)
+
+# #         def one_time_step(x_prev, data_t):
+# #             key_t, u_t, w_t = data_t
+# #             k1, k2 = jr.split(key_t, 2)
+# #             x_t = self.transition_distribution(params, x_prev, (u_t, w_t)).sample(seed=k2)
+# #             y_t = self.emission_distribution(params, x_t, (u_t, w_t)).sample(seed=k1)
+# #             return x_t, (x_t, y_t)
+
+# #         _, (xs_1T, ys_1T) = lax.scan(step, x0, (step_keys, U, W))
+# #         states    = jnp.concatenate([x0[None, ...], xs_1T], axis=0)
+# #         emissions = jnp.concatenate([y0[None, ...], ys_1T], axis=0)
+        
+# #         return states, emissions
+
+#     def generate_latents_and_observations(self, key, S, T, u, A, B, Q, mu0, Q0, C, d, R):
+#         ''' 
+#         Parameters
+#         ----------
+#         S: number of trials/sessions
+#         T: number of time points in trial/session
+#         '''
+        
+        
+#         x = np.zeros((S, T, self.K))
+#         y = np.zeros((S, T, self.D))
+        
+#         key_x0, key_y0 = jr.split(key, num=2)
+
+#         # for s in range(S):
+#         #     x[s, 0] = np.random.multivariate_normal(mu0.flatten(), Q0)
+#         #     y[s, 0] = np.random.multivariate_normal((C @ x[s, 0] + d).reshape(self.D), R)
+# #             for i in range(1, T):
+# #                 x[s, i] = np.random.multivariate_normal((A @ x[s, i-1] + B @ u[s,i-1]).reshape((self.K)), Q)
+# #                 y[s, i] = np.random.multivariate_normal((C @ x[s, i] + d).reshape(self.D), R)
+        
+#         # first emission
+#         x0 = jr.multivariate_normal(key_x0, mu0, Q0)
+#         y0 = jr.multivariate_normal(key_x0, C @ x0 + d, R)
+        
+#         def step(x_prev, u_prev, key_step):
+#             key_x, key_y = jr.split(key_step, num=2)
+#             x_current = jr.multivariate_normal(key_x, A @ x_prev + B @ u_prev, Q)
+#             y_current = jr.multivariate_normal(key_y, C @ x_current + d, R)
+#             return x_current, (x_current, y_current)
+        
+#         _, (xs, ys) = lax.scan(step, init=0, xs=u)
+            
+                
+#         		def body(carry, input_t):
+# 		    # carry_t is a state at time t
+# 		    new_carry = carry + x_t         # what moves forward to next step
+# 		    out_t = carry * 2               # what we *record* for this step
+# 		    return new_carry, out_t
+		
+# carry_T, outs = lax.scan(body,  carry_0=0,  inputs=jnp.array([1,2,3]))
+
+#         return x, y
 
         
