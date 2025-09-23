@@ -291,6 +291,72 @@ def optimize_C_closed_form_C1_C2(K1, C, d, R, M1, M1_T, M_last, Y_tilde):
     
     return jnp.concatenate([C1,C2], axis=1)
 
+@partial(jit, static_argnums=(0,1))
+def compute_ECLL(S, T, A, B, Q, mu0, Q0, C, d, R, m, stats):
+    ''' 
+    stats already summed across all sessions, but m has leading axis of S sessions
+    '''
+    M1, M1_T, M_next, Y1, Y2, Y_tilde, M_first, M_last, U1_T, U_tilde, U_delta = stats
+
+    Q0_inv = jnp.linalg.inv(Q0)
+    Q_inv = jnp.linalg.inv(Q)
+    R_inv = jnp.linalg.inv(R)
+
+    # first latent terms 
+    ecll = - 0.5 * jnp.trace(Q0_inv @ M_first)
+    ecll += jnp.trace(Q0_inv @ jnp.outer(jnp.sum(m[:,0], axis=0), mu0))
+    ecll += -0.5 * S * jnp.trace(Q0_inv @ jnp.outer(mu0,mu0))
+
+    # Q terms 
+    ecll += -0.5 * jnp.trace(Q_inv @ (M1_T - M_first + M_last)) \
+            + jnp.trace(Q_inv @ A @ M_next) \
+            - 0.5 * jnp.trace(A.T @ Q_inv @ A @ M1_T)
+
+    # R terms 
+    ecll += -0.5 * jnp.trace(R_inv @ Y2) \
+            + jnp.trace(R_inv @ C @ Y_tilde) \
+            - 0.5 * jnp.trace(C.T @ R_inv @ C @ (M1_T + M_last))
+
+    # d terms
+    ecll += -0.5 * S * T * d.T @ R_inv @ d \
+            + jnp.trace(R_inv @ jnp.outer(Y1,d)) \
+            - jnp.trace(R_inv @ C @ jnp.outer(M1,d))
+
+    # B, U terms
+    ecll += -0.5 * jnp.trace(B.T @ Q_inv @ B @ U1_T) \
+            + jnp.trace(B.T @ Q_inv @ U_delta) \
+            - jnp.trace(B.T @ Q_inv @ A @ U_tilde)
+
+    # logdet terms 
+    ecll += - 0.5 * (T-1) * S * jnp.linalg.slogdet(Q)[1] - 0.5 * (T-1) * S * Q.shape[0] * jnp.log(2*jnp.pi) \
+            - 0.5 * T * S * jnp.linalg.slogdet(R)[1] - 0.5 * T * S * R.shape[0] * jnp.log(2*jnp.pi) \
+        - 0.5 * S * jnp.linalg.slogdet(Q0)[1] - 0.5 * S * Q0.shape[0] * jnp.log(2*jnp.pi)
+    
+    return ecll
+
+def compute_entropy(cov, cov_successive):
+    ''' 
+    for each session
+    '''
+    T = cov.shape[0]
+    K = cov.shape[1]
+    
+    sign, logdet = jnp.linalg.slogdet(cov[0])
+    H0 = 0.5 * sign * logdet + 0.5 * T * K * jnp.log(2 * jnp.pi * jnp.e)
+    
+    def step(H_prev, args):
+        cov_prev, cov_current, cov_successive_prev = args
+        sign, logdet = jnp.linalg.slogdet(cov_current - cov_successive_prev.T @ jnp.linalg.inv(cov_prev) @ cov_successive_prev)
+        H_current = H_prev + 0.5 * sign * logdet
+        return H_current, H_current
+        
+    H, _ = lax.scan(step, init=H0, xs=(cov[:-1], cov[1:], cov_successive))
+    
+    return H
+
+# note entropy is constant across batches since cov & cov_successive only depend on parameters
+compute_entropy_batches = jit(vmap(compute_entropy, in_axes=(0,0))) 
+
 # def modified_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_successive, max_iter_C=50, verbosity=0):
 #     # per-session stats (each with leading S axis)
 #     sufficient_stats = sufficient_statistics_E_step_batches(u, y, m, cov, cov_successive)

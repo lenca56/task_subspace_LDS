@@ -164,9 +164,10 @@ class task_subspace_LDS():
         C  = jnp.asarray(init_C);   d  = jnp.asarray(init_d);   R  = jnp.asarray(init_R)
 
         S, T = y.shape[:2]
-        
-        
-        for it in range(max_iter):
+
+        def iter(parameters, _):
+            A, B, Q, mu0, Q0, C, d, R = parameters
+
             mu, mu_prior, V, V_prior, ll = Kalman_filter_E_step_batches(y, u, A, B, Q, mu0, Q0, C, d, R)
 
             m, cov, cov_successive = Kalman_smoother_E_step_batches(A, mu, mu_prior, V, V_prior)
@@ -175,16 +176,28 @@ class task_subspace_LDS():
 
             stats = tree_map(lambda x: x.sum(axis=0), suff)
 
+            ecll_old = compute_ECLL(int(S), int(T), A, B, Q, mu0, Q0, C, d, R, m, stats)
+
+            H = jnp.sum(compute_entropy_batches(cov, cov_successive))
+
+            elbo = ecll_old + H
+
             # relaxed constraint such that C1 ortho to C2 but nothing more
             C = optimize_C_closed_form_C1_C2(int(K1), C, d, R, stats[0], stats[1], stats[7], stats[5])
-#             C = optimize_C_Stiefel(C, d, R,
-#                                    M1=stats[0], M1_T=stats[1], M_last=stats[7], Y_tilde=stats[5],
-#                                    max_iter_C=10, verbosity=verbosity)
+    #             C = optimize_C_Stiefel(C, d, R,
+    #                                    M1=stats[0], M1_T=stats[1], M_last=stats[7], Y_tilde=stats[5],
+    #                                    max_iter_C=10, verbosity=verbosity)
 
             A, B, Q, mu0, Q0, d, R = closed_form_M_step(int(K1), u, y, A, B, Q, mu0, Q0, C, d, R,
-                                                        m, stats)
+                                                            m, stats)
 
-        return A, B, Q, mu0, Q0, C, d, R
+            ecll_new = compute_ECLL(int(S), int(T), A, B, Q, mu0, Q0, C, d, R, m, stats)
+    
+            return (A, B, Q, mu0, Q0, C, d, R), (ecll_new, ecll_old, elbo, jnp.sum(ll))
+    
+        (A, B, Q, mu0, Q0, C, d, R), (ecll_new, ecll_old, elbo, ll) = lax.scan(iter, init=(A, B, Q, mu0, Q0, C, d, R), length=max_iter)
+
+        return A, B, Q, mu0, Q0, C, d, R, ecll_new, ecll_old, elbo, ll
 
     def fit_EM_timed(self, K1, u, y,
                      init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R,
@@ -267,29 +280,7 @@ class task_subspace_LDS():
 
         return A, B, Q, mu0, Q0, C, d, R, timing_log
 
-    
-    
-#     def fit_EM(self, u, y, init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R, max_iter=300, verbosity=0):
-#         # cast to jax arrays once (and to desired dtype)
-#         A  = jnp.asarray(init_A, dtype=);  B  = jnp.asarray(init_B);  Q  = jnp.asarray(init_Q)
-#         mu0= jnp.asarray(init_mu0);Q0 = jnp.asarray(init_Q0)
-#         C  = jnp.asarray(init_C);  d  = jnp.asarray(init_d);  R  = jnp.asarray(init_R)
 
-#         S, T = y.shape[:2]
-
-#         for it in range(max_iter):
-#             if it % 10 == 0:
-#                 print(it)
-
-#             # E-step (batched over S)
-#             mu, mu_prior, V, V_prior, _ = Kalman_filter_E_step_batches(y, u, A, B, Q, mu0, Q0, C, d, R)
-#             m, cov, cov_successive = Kalman_smoother_E_step_batches(A, mu, mu_prior, V, V_prior)
-
-#             # M-step
-#             A, B, Q, mu0, Q0, C, d, R = modified_M_step(self.K1, u, y, A, B, Q, mu0, Q0, C, d, R,
-#                                                         m, cov, cov_successive, max_iter_C=50, verbosity=verbosity)
-
-#         return A, B, Q, mu0, Q0, C, d, R
     
    
 
