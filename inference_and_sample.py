@@ -11,10 +11,7 @@ from pymanopt.function import jax as funjax
 
 def generate_latents_and_observations(key, u, A, B, Q, mu0, Q0, C, d, R):
     ''' 
-    Parameters
-    ----------
-    S: number of trials/sessions
-    T: number of time points in trial/session
+    generate latents x and observations y given parameters of model and inputs u
     '''
     T = u.shape[0]
         
@@ -169,12 +166,14 @@ def sufficient_statistics_E_step(u, y, m, cov, cov_successive):
 sufficient_statistics_E_step_batches = jit(vmap(sufficient_statistics_E_step, in_axes=(0,0,0,0,0)))
 
 @partial(jit, static_argnums=(0,))
-def closed_form_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, stats, verbosity):
+def closed_form_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, stats):
     ''' 
     closed-form updates for all parameters except observation matrix C
         
     using all sessions together for updates
     '''
+    
+     # # FOR NUMERICAL STABILITY, MIGHT HAVE TO USE scipy.linalg.solve INSTEAD OF np.linalg.inv
 
     S = y.shape[0]
     T = y.shape[1]
@@ -197,8 +196,6 @@ def closed_form_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, stats, verbosity)
     R = 0.5 * (R + R.T) # to ensure numerical symmetry
     R += 1e-8 * jnp.eye(R.shape[0]) # to ensure no decay to 0 (ill conditioned)
 
-    # # FOR NUMERICAL STABILITY, MIGHT HAVE TO USE scipy.linalg.solve INSTEAD OF np.linalg.inv
-    
     # blockwise update for A
     Qinv = jnp.linalg.inv(Q)
     
@@ -238,7 +235,7 @@ def closed_form_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, stats, verbosity)
 
 def optimize_C_Stiefel(C, d, R, M1, M1_T, M_last, Y_tilde, max_iter_C=50, verbosity=0):
     ''' 
-    closed-form updates for all parameters except the C
+    optimization of observation matrix C on Stiefel manifold
         
     using all sessions together for updates
     '''
@@ -256,7 +253,7 @@ def optimize_C_Stiefel(C, d, R, M1, M1_T, M_last, Y_tilde, max_iter_C=50, verbos
         optimize over Stiefel manifold of orthogonal matrices the loss function of C from EM
         '''
         # term1 = -trace(C Y_tilde R^{-1})  == -trace(Y_tilde @ (R^{-1} C))      
-        term1 = -jnp.trace(C @ Y_tilde @ R_inv)                  # scalar
+        term1 = -jnp.trace(C_var @ Y_tilde @ R_inv)                  # scalar
 
         # term2 = 0.5 * trace( (M1_T + M_last) @ (C^T R^{-1} C) ) 
         term2 = 0.5 * jnp.trace((M1_T + M_last) @ C_var.T @ R_inv @ C_var)              # scalar
@@ -274,17 +271,40 @@ def optimize_C_Stiefel(C, d, R, M1, M1_T, M_last, Y_tilde, max_iter_C=50, verbos
     
     return C
 
-def modified_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_successive, max_iter_C=50, verbosity=0):
-    # per-session stats (each with leading S axis)
-    sufficient_stats = sufficient_statistics_E_step_batches(u, y, m, cov, cov_successive)
-
-    # sum across sessions for every leaf
-    stats = tree_map(lambda x: x.sum(axis=0), sufficient_stats)
+@partial(jit, static_argnums=(0,))
+def optimize_C_closed_form_C1_C2(K1, C, d, R, M1, M1_T, M_last, Y_tilde):
     
-    M1, M1_T, _, _, _, Y_tilde, _, M_last, _, _, _ = stats
-
-    C_new = optimize_C_Stiefel(C, d, R, M1=stats[0], M1_T=stats[1], M_last=stats[7], Y_tilde=stats[5], max_iter_C=max_iter_C, verbosity=verbosity)
+    M = M1_T + M_last
     
-    A_new, B_new, Q_new, mu0_new, Q0_new, d_new, R_new = closed_form_M_step(int(K1), u, y, A, B, Q, mu0, Q0, C, d, R, m, stats, verbosity)
+    MD1 = jnp.outer(M1, d)[:K1,:]
+    MD2 = jnp.outer(M1, d)[K1:,:]
+    
+    C1 = jnp.asarray(C[:,:K1])
+    C2 = jnp.asarray(C[:,K1:])
+    
+    # C1 closed form update given C2
+    C1 = (Y_tilde[:K1,:].T - MD1.T - C2 @ M[K1:,:K1]) @ jnp.linalg.inv(M[:K1,:K1])
+    
+    # C2 update given C1: Lagrange multiplier
+    L = jnp.linalg.solve(C1.T @ R @ C1, C1.T @ Y_tilde[K1:,:].T - C1.T @ MD2.T - C1.T @ C1 @ M[:K1,K1:]  )
+    C2 = (Y_tilde[K1:,:].T - MD2.T - C1 @ M[:K1,K1:] - R @ C1 @ L) @ jnp.linalg.inv(M[K1:,K1:])
+    
+    return jnp.concatenate([C1,C2], axis=1)
 
-    return A_new, B_new, Q_new, mu0_new, Q0_new, C_new, d_new, R_new 
+# def modified_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, cov, cov_successive, max_iter_C=50, verbosity=0):
+#     # per-session stats (each with leading S axis)
+#     sufficient_stats = sufficient_statistics_E_step_batches(u, y, m, cov, cov_successive)
+
+#     # sum across sessions for every leaf
+#     stats = tree_map(lambda x: x.sum(axis=0), sufficient_stats)
+    
+#     M1, M1_T, _, _, _, Y_tilde, _, M_last, _, _, _ = stats
+
+# #     C_new = optimize_C_Stiefel(C, d, R, M1=stats[0], M1_T=stats[1], M_last=stats[7], Y_tilde=stats[5], max_iter_C=max_iter_C, verbosity=verbosity)
+
+#     # relaxed constraint such that C1 ortho to C2 but nothing more
+#     C_new = optimize_C_closed_form_C1_C2(int(K1), C, d, R, M1, M1_T, M_last, Y_tilde)
+    
+#     A_new, B_new, Q_new, mu0_new, Q0_new, d_new, R_new = closed_form_M_step(int(K1), u, y, A, B, Q, mu0, Q0, C, d, R, m, stats, verbosity)
+
+#     return A_new, B_new, Q_new, mu0_new, Q0_new, C_new, d_new, R_new 

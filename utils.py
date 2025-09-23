@@ -85,6 +85,19 @@ def generate_dynamics_A(key, eigenvalues, normal=True, distr='normal'):
             A = Q @ D @ Q.T
         else:
             raise Exception('Non-normal A hasnt been considered yet')
+    
+    return A
+            
+def mse(z, true_z):
+    '''
+    mean squared error = 1/datapoints * sum (a-a*)^2
+    '''
+    if z.ndim == 1: # vector inner product
+        return jnp.linalg.norm(z-true_z) / z.shape[0]
+    elif z.ndim == 2: # Frobenius inner product
+        return jnp.trace((z-true_z) @ (z-true_z).T) / (z.shape[0] * z.shape[1])
+    else:
+        raise Exception('mse function works only on 1- or 2-dim')
 
             #         else:
 #             # add values on off diagonal of D to increase non-normality

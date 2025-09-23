@@ -156,6 +156,35 @@ class task_subspace_LDS():
         
         return  B, Q, mu0, Q0, C, d, R
     
+    def fit_EM(self, K1, u, y, init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R,
+                     max_iter=500):
+        
+        A  = jnp.asarray(init_A);   B  = jnp.asarray(init_B);   Q  = jnp.asarray(init_Q)
+        mu0= jnp.asarray(init_mu0); Q0 = jnp.asarray(init_Q0)
+        C  = jnp.asarray(init_C);   d  = jnp.asarray(init_d);   R  = jnp.asarray(init_R)
+
+        S, T = y.shape[:2]
+        
+        
+        for it in range(max_iter):
+            mu, mu_prior, V, V_prior, ll = Kalman_filter_E_step_batches(y, u, A, B, Q, mu0, Q0, C, d, R)
+
+            m, cov, cov_successive = Kalman_smoother_E_step_batches(A, mu, mu_prior, V, V_prior)
+
+            suff = sufficient_statistics_E_step_batches(u, y, m, cov, cov_successive)
+
+            stats = tree_map(lambda x: x.sum(axis=0), suff)
+
+            # relaxed constraint such that C1 ortho to C2 but nothing more
+            C = optimize_C_closed_form_C1_C2(int(K1), C, d, R, stats[0], stats[1], stats[7], stats[5])
+#             C = optimize_C_Stiefel(C, d, R,
+#                                    M1=stats[0], M1_T=stats[1], M_last=stats[7], Y_tilde=stats[5],
+#                                    max_iter_C=10, verbosity=verbosity)
+
+            A, B, Q, mu0, Q0, d, R = closed_form_M_step(int(K1), u, y, A, B, Q, mu0, Q0, C, d, R,
+                                                        m, stats)
+
+        return A, B, Q, mu0, Q0, C, d, R
 
     def fit_EM_timed(self, K1, u, y,
                      init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R,
@@ -177,9 +206,12 @@ class task_subspace_LDS():
         stats = tree_map(lambda x: x.sum(axis=0), suff)
         _sync(stats)
 
-        _ = optimize_C_Stiefel(C, d, R,
-                               M1=stats[0], M1_T=stats[1], M_last=stats[7], Y_tilde=stats[5],
-                               max_iter_C=1, verbosity=0)
+#         _ = optimize_C_Stiefel(C, d, R,
+#                                M1=stats[0], M1_T=stats[1], M_last=stats[7], Y_tilde=stats[5],
+#                                max_iter_C=1, verbosity=0)
+
+        # relaxed constraint such that C1 ortho to C2 but nothing more
+        _ = optimize_C_closed_form_C1_C2(int(K1), C, d, R, stats[0], stats[1], stats[7], stats[5])
 
         A_, B_, Q_, mu0_, Q0_, d_, R_ = closed_form_M_step(int(K1), u, y, A, B, Q, mu0, Q0, C, d, R,
                                                            m, stats, verbosity)
@@ -191,52 +223,47 @@ class task_subspace_LDS():
         timing_log = []  
 
         for it in range(max_iter):
-            t0 = time.perf_counter()
+#             t0 = time.perf_counter()
             mu, mu_prior, V, V_prior, ll = Kalman_filter_E_step_batches(y, u, A, B, Q, mu0, Q0, C, d, R)
-            _sync((mu, mu_prior, V, V_prior, ll))
-            t1 = time.perf_counter()
+#             _sync((mu, mu_prior, V, V_prior, ll))
+#             t1 = time.perf_counter()
 
             m, cov, cov_successive = Kalman_smoother_E_step_batches(A, mu, mu_prior, V, V_prior)
-            _sync((m, cov, cov_successive))
-            t2 = time.perf_counter()
+#             _sync((m, cov, cov_successive))
+#             t2 = time.perf_counter()
 
             suff = sufficient_statistics_E_step_batches(u, y, m, cov, cov_successive)
-            _sync(suff)
-            t3 = time.perf_counter()
+#             _sync(suff)
+#             t3 = time.perf_counter()
 
             stats = tree_map(lambda x: x.sum(axis=0), suff)
-            _sync(stats)
-            t4 = time.perf_counter()
+#             _sync(stats)
+#             t4 = time.perf_counter()
 
             # Time C optimization (Python loop; no _sync needed, but harmless)
-            tC0 = time.perf_counter()
-            C = optimize_C_Stiefel(C, d, R,
-                                   M1=stats[0], M1_T=stats[1], M_last=stats[7], Y_tilde=stats[5],
-                                   max_iter_C=10, verbosity=verbosity)
-            tC1 = time.perf_counter()
+#             tC0 = time.perf_counter()
+            # relaxed constraint such that C1 ortho to C2 but nothing more
+            C, listt = optimize_C_closed_form_C1_C2(int(K1), C, d, R, stats[0], stats[1], stats[7], stats[5])
+#             C = optimize_C_Stiefel(C, d, R,
+#                                    M1=stats[0], M1_T=stats[1], M_last=stats[7], Y_tilde=stats[5],
+#                                    max_iter_C=10, verbosity=verbosity)
+#             tC1 = time.perf_counter()
 
             A, B, Q, mu0, Q0, d, R = closed_form_M_step(int(K1), u, y, A, B, Q, mu0, Q0, C, d, R,
                                                         m, stats, verbosity)
-            _sync((A, B, Q, mu0, Q0, d, R))
-            t5 = time.perf_counter()
+#             _sync((A, B, Q, mu0, Q0, d, R))
+#             t5 = time.perf_counter()
 
-            times = {
-                "filter":       t1 - t0,
-                "smoother":     t2 - t1,
-                "suff_stats":   t3 - t2,
-                "stats_reduce": t4 - t3,
-                "opt_C":        tC1 - tC0,
-                "closed_form":  t5 - tC1,
-                "iteration":    t5 - t0,
-            }
-            timing_log.append(times)
-
-            if (verbosity and (it % print_every == 0)):
-                print(f"[it {it}] "
-                      f"filter {times['filter']:.3f}s | smooth {times['smoother']:.3f}s | "
-                      f"stats {times['suff_stats']:.3f}s | reduce {times['stats_reduce']:.3f}s | "
-                      f"C {times['opt_C']:.3f}s | M {times['closed_form']:.3f}s | "
-                      f"total {times['iteration']:.3f}s")
+#             times = {
+#                 "filter":       t1 - t0,
+#                 "smoother":     t2 - t1,
+#                 "suff_stats":   t3 - t2,
+#                 "stats_reduce": t4 - t3,
+#                 "opt_C":        tC1 - tC0,
+#                 "closed_form":  t5 - tC1,
+#                 "iteration":    t5 - t0,
+#             }
+#             timing_log.append(times)
 
         return A, B, Q, mu0, Q0, C, d, R, timing_log
 
