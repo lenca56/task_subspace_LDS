@@ -156,7 +156,7 @@ class task_subspace_LDS():
         
         return  B, Q, mu0, Q0, C, d, R
     
-    def fit_EM(self, K1, u, y, init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R,
+    def fit_EM(self, u, y, init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R,
                      max_iter=500):
         
         A  = jnp.asarray(init_A);   B  = jnp.asarray(init_B);   Q  = jnp.asarray(init_Q)
@@ -164,8 +164,12 @@ class task_subspace_LDS():
         C  = jnp.asarray(init_C);   d  = jnp.asarray(init_d);   R  = jnp.asarray(init_R)
 
         S, T = y.shape[:2]
+        
+        switch_at = 250
+        tau_after = 0
+        T_total = S * T
 
-        def iter(parameters, _):
+        def iter(parameters, t):
             A, B, Q, mu0, Q0, C, d, R = parameters
 
             mu, mu_prior, V, V_prior, ll = Kalman_filter_E_step_batches(y, u, A, B, Q, mu0, Q0, C, d, R)
@@ -181,23 +185,76 @@ class task_subspace_LDS():
             H = jnp.sum(compute_entropy_batches(cov, cov_successive))
 
             elbo = ecll_old + H
+            
+            # computing G
+            
+            M = stats[1] + stats[7]
+            
+            # eps = 1e-6
+            # G1 = invsqrt_psd(M[:self.K1,:self.K1] / (S*T) + eps * jnp.eye(self.K1, dtype=M.dtype), eps=eps)  # K1 x K1 matrix
+            # G2 = invsqrt_psd(M[self.K1:,self.K1:] / (S*T) + eps * jnp.eye(self.K2, dtype=M.dtype), eps=eps)  # K2 x K2 matrix
+            # G = jnp.block([[G1, jnp.zeros((self.K1,self.K2), M.dtype)],[jnp.zeros((self.K2, self.K1), M.dtype), G2]])
+            
+            # --- build tempered G
+            M = stats[1] + stats[7]                      # M1_T + M_last
+            eps = 1e-6
+            dtype = M.dtype
+
+            # # tau schedule: 1.0 until switch_at, then tau_after
+            # tau = jnp.where(t < switch_at, 0, tau_after).astype(dtype)
+            
+#             # tau = 1
+#             S11 = M[:self.K1, :self.K1] / T_total + eps * jnp.eye(self.K1, dtype=dtype)
+#             S22 = M[self.K1:, self.K1:] / T_total + eps * jnp.eye(self.K2, dtype=dtype)
+#             G1  = utils.invpow_psd(S11, tau, eps)
+#             G2  = utils.invpow_psd(S22, tau, eps)
+#             G_block   = jnp.block([[G1, jnp.zeros((self.K1, self.K2), dtype=dtype)],
+#                              [jnp.zeros((self.K2, self.K1), dtype=dtype), G2]])
+            
+            # # tau schedule: 1.0 until switch_at, then tau_after
+            # G = jnp.where(t < switch_at, G_block, jnp.eye(self.K, dtype=dtype)).astype(dtype)
+            G = jnp.eye(self.K, dtype=dtype)
+            
+            X  = jnp.linalg.solve(G.T, A.T).T       # A @ G^{-1}
+            A  = G @ X
+            B  = G @ B
+            Q  = G @ Q @ G.T
+            mu0 = G @ mu0
+            Q0  = G @ Q0 @ G.T
+            C   = (jnp.linalg.solve(G.T, C.T)).T
+            
+#             mu, mu_prior, V, V_prior, ll = Kalman_filter_E_step_batches(y, u, A, B, Q, mu0, Q0, C, d, R)
+
+#             m, cov, cov_successive = Kalman_smoother_E_step_batches(A, mu, mu_prior, V, V_prior)
+
+#             suff = sufficient_statistics_E_step_batches(u, y, m, cov, cov_successive)
+
+#             stats = tree_map(lambda x: x.sum(axis=0), suff)
+
+            stats = transform_sufficient_statistics(self.K1, self.K2, S*T, G, stats)
 
             # relaxed constraint such that C1 ortho to C2 but nothing more
-            C = optimize_C_closed_form_C1_C2(int(K1), C, d, R, stats[0], stats[1], stats[7], stats[5])
+            C = optimize_C_closed_form_C1_C2(int(self.K1), C, d, R, stats[0], stats[1], stats[7], stats[5])
     #             C = optimize_C_Stiefel(C, d, R,
     #                                    M1=stats[0], M1_T=stats[1], M_last=stats[7], Y_tilde=stats[5],
     #                                    max_iter_C=10, verbosity=verbosity)
-
-            A, B, Q, mu0, Q0, d, R = closed_form_M_step(int(K1), u, y, A, B, Q, mu0, Q0, C, d, R,
-                                                            m, stats)
-
-            ecll_new = compute_ECLL(int(S), int(T), A, B, Q, mu0, Q0, C, d, R, m, stats)
     
-            return (A, B, Q, mu0, Q0, C, d, R), (ecll_new, ecll_old, elbo, jnp.sum(ll))
-    
-        (A, B, Q, mu0, Q0, C, d, R), (ecll_new, ecll_old, elbo, ll) = lax.scan(iter, init=(A, B, Q, mu0, Q0, C, d, R), length=max_iter)
+            m_G = m @ G.T
 
-        return A, B, Q, mu0, Q0, C, d, R, ecll_new, ecll_old, elbo, ll
+            A, B, Q, mu0, Q0, d, R = closed_form_M_step(int(self.K1), u, y, A, B, Q, mu0, Q0, C, d, R,
+                                                            m_G, stats)
+
+            ecll_new = compute_ECLL(int(S), int(T), A, B, Q, mu0, Q0, C, d, R, m_G, stats)
+            
+            initA, initB, initQ, initmu0, initQ0, initC, initd, initR = parameters
+            
+            changes_param = jnp.stack([jnp.linalg.norm(A[:self.K1,:self.K1]-initA[:self.K1,:self.K1]),jnp.linalg.norm(A[self.K1:,:self.K1]-initA[self.K1:,:self.K1]), jnp.linalg.norm(A[self.K1:,self.K1:]-initA[self.K1:,self.K1:]), jnp.linalg.norm(B-initB),jnp.linalg.norm(Q-initQ),jnp.linalg.norm(mu0-initmu0),jnp.linalg.norm(Q0-initQ0),jnp.linalg.norm(C[:,:self.K1]-initC[:,:self.K1]),jnp.linalg.norm(C[:,self.K1:]-initC[:,self.K1:]),jnp.linalg.norm(d-initd),jnp.linalg.norm(R-initR)])
+    
+            return (A, B, Q, mu0, Q0, C, d, R), (ecll_new, ecll_old, elbo, jnp.sum(ll), changes_param)
+    
+        (A, B, Q, mu0, Q0, C, d, R), (ecll_new, ecll_old, elbo, ll, changes_param) = lax.scan(iter, init=(A, B, Q, mu0, Q0, C, d, R), xs=jnp.arange(max_iter))
+
+        return A, B, Q, mu0, Q0, C, d, R, ecll_new, ecll_old, elbo, ll, changes_param
 
     def fit_EM_timed(self, K1, u, y,
                      init_A, init_B, init_Q, init_mu0, init_Q0, init_C, init_d, init_R,

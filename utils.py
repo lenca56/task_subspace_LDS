@@ -55,8 +55,7 @@ def generate_dynamics_A(key, eigenvalues, normal=True, distr='normal'):
     K = eigenvalues.shape[0]
 
     if K == 1:
-        A = jnp.ones((1,1))
-        A[0,0] = jnp.real(eigenvalues[0])
+        A = jnp.ones((1,1)) * jnp.real(eigenvalues[0])
     else:
         if compare_as_sets(eigenvalues, jnp.conj(eigenvalues)) == False:
             raise Exception ('Eigenvalues are NOT in conjugate pairs')
@@ -87,6 +86,82 @@ def generate_dynamics_A(key, eigenvalues, normal=True, distr='normal'):
             raise Exception('Non-normal A hasnt been considered yet')
     
     return A
+
+def generate_low_rank_matrix(K1, key):
+    ''' 
+    generating low rank matrices based on Srdjan's OG paper
+        - using rank 1 
+        - using rank 2 oscillatory components to get complex conjugate eigenvalues
+    
+    this approach imposes K1=K2 and K1 <= D/3
+    
+    note O(W_ij) = sqrt(1/D)
+    '''
+    
+    if 3 * K1 > D:
+        raise Exception('generation needs K1 <= D/3')
+    
+    key0, key1, key2, key3, key4, key5 = jr.split(key, num=6)
+    
+    if K1 % 2 == 1:
+        # flip coin for int((K1-1)/2) pairs to decide real-vs-complex 2x2 motifs
+        flip_coin = jax.random.bernoulli(key0, p=0.5, shape=((K1-1)//2,)).astype(jnp.int32)
+        R_real_pairs    = jnp.sum(flip_coin)                 # number of 2x2 blocks set to "real"
+        R_complex_pairs = flip_coin.shape[0] - R_real_pairs  # number of 2x2 blocks set to "complex"
+        # actual number of eigenvalues contributed by each kind of block
+        R_real    = int(2 * R_real_pairs) + 1 # one is guaranteed to be real
+        R_complex = int(2 * R_complex_pairs)
+    else:
+        # flip coin for int((K1-1)/2) pairs to decide real-vs-complex 2x2 motifs
+        flip_coin = jax.random.bernoulli(key0, p=0.5, shape=((K1-2)//2,)).astype(jnp.int32)
+        R_real_pairs    = jnp.sum(flip_coin)                 # number of 2x2 blocks set to "real"
+        R_complex_pairs = flip_coin.shape[0] - R_real_pairs  # number of 2x2 blocks set to "complex"
+        # actual number of eigenvalues contributed by each kind of block
+        R_real    = int(2 * R_real_pairs) + 2 # one pair is guaranteed to be real
+        R_complex = int(2 * R_complex_pairs)
+        
+
+    mean = jnp.zeros(D, dtype=jnp.float32)
+    cov  = jnp.eye(D, dtype=jnp.float32)
+    G = jr.multivariate_normal(key1, mean, cov, method='eigh', shape=(D,))
+    G, _ = jnp.linalg.qr(G)  # Q is D x D orthonormal
+
+    # real eigenvalues
+    mo = G[:, [3*x for x in range(R_real)]]
+    no = G[:, [3*x+1 for x in range(R_real)]]
+    w  = G[:, [3*x+2 for x in range(R_real)]]
+    pm = jnp.sqrt(D) * jr.uniform(key2, shape=(R_real,), minval=0.8, maxval=1.0)  # (R_real,)
+    pn = jnp.sqrt(D) * jr.uniform(key3, shape=(R_real,), minval=0.8, maxval=1.0)  # (R_real,)
+    pm = pm[None, :]  # (1, R_real)
+    pn = pn[None, :]  # (1, R_real)
+    
+    M_real = (mo + w * pm) / jnp.sqrt(D)   # (D, R_real)
+    N_real = (no + w * pn) / jnp.sqrt(D)   # (D, R_real)
+
+    # complex eigenvalues
+    Rc = int(R_complex // 2)
+
+    x1 = G[:, [R_real + 6*x     for x in range(Rc)]]
+    x2 = G[:, [R_real + 6*x + 1 for x in range(Rc)]]
+    x3 = G[:, [R_real + 6*x + 2 for x in range(Rc)]]
+    x4 = G[:, [R_real + 6*x + 3 for x in range(Rc)]]
+    y1 = G[:, [R_real + 6*x + 4 for x in range(Rc)]]
+    y2 = G[:, [R_real + 6*x + 5 for x in range(Rc)]]
+    p     = jr.uniform(key4, shape=(Rc,), minval=0.4,  maxval=0.9)[None, :]   # (1,Rc)
+    gamma = jr.uniform(key5, shape=(Rc,), minval=0.01, maxval=1.1)[None, :]   # (1,Rc)
+
+    m1 = x1 + y1 * p
+    m2 = x2 + y2 * p
+    n1 = x3 + y2 * p + y1 * (p * gamma)
+    n2 = x4 - y1 * p
+    M_complex = jnp.concatenate([m1, m2], axis=1)  # (D, 2*Rc)
+    N_complex = jnp.concatenate([n1, n2], axis=1)  # (D, 2*Rc)
+
+    M = jnp.concatenate([M_real, M_complex], axis=1)  # (D, R_real + 2*Rc)
+    N = jnp.concatenate([N_real, N_complex], axis=1)  # (D, R_real + 2*Rc)
+    W = M @ N.T   
+    
+    return W
             
 def mse(z, true_z):
     '''
@@ -98,6 +173,32 @@ def mse(z, true_z):
         return jnp.trace((z-true_z) @ (z-true_z).T) / (z.shape[0] * z.shape[1])
     else:
         raise Exception('mse function works only on 1- or 2-dim')
+
+@ jit
+def invpow_psd(M, tau, eps=1e-6):
+    """
+    Return (M)^{-tau/2} for a symmetric PSD matrix M.
+    - M: (K, K) array (float32/float64)
+    - tau: scalar in [0, 1]; tau=1 => inverse square-root, tau=0 => identity
+    - eps: eigenvalue floor for numerical stability
+    """
+    M = 0.5 * (M + M.T)                       # enforce symmetry
+    tau = jnp.asarray(tau, dtype=M.dtype)     # ensure same dtype
+    w, U = jnp.linalg.eigh(M)                 # M = U diag(w) U^T
+    w = jnp.clip(w, a_min=eps)                # floor eigenvalues
+
+    # Compute w^{-tau/2} robustly via exp/log to avoid pow under/overflow
+    s = jnp.exp(-0.5 * tau * jnp.log(w))      # shape (K,)
+
+    return (U * s) @ U.T                      # U diag(s) U^T
+        
+# @ jit
+# def invsqrt_psd(M, eps=1e-6):
+#     """Symmetric inverse square-root of a PSD matrix M."""
+#     M = 0.5 * (M + M.T)                     # enforce symmetry
+#     w, U = jnp.linalg.eigh(M)               # M = U diag(w) U^T
+#     w = jnp.clip(w, a_min=eps, a_max=None)  # numerical floor
+#     return (U / jnp.sqrt(w)) @ U.T          # U diag(w^{-1/2}) U^T
 
             #         else:
 #             # add values on off diagonal of D to increase non-normality

@@ -8,6 +8,7 @@ from pymanopt.manifolds import Stiefel
 from pymanopt import Problem
 from pymanopt.optimizers import TrustRegions
 from pymanopt.function import jax as funjax
+from utils import * 
 
 def generate_latents_and_observations(key, u, A, B, Q, mu0, Q0, C, d, R):
     ''' 
@@ -165,6 +166,17 @@ def sufficient_statistics_E_step(u, y, m, cov, cov_successive):
 # jax efficient parallelization across batches
 sufficient_statistics_E_step_batches = jit(vmap(sufficient_statistics_E_step, in_axes=(0,0,0,0,0)))
 
+@partial(jit, static_argnums=(0,1,2))
+def transform_sufficient_statistics(K1, K2, T_total, G, stats):
+    ''' 
+    transform sufficient statistics (which are already summed across sessions) by similarity transformation of parameters 
+    '''
+    M1, M1_T, M_next, Y1, Y2, Y_tilde, M_first, M_last, U1_T, U_tilde, U_delta = stats
+    
+    M = M1_T + M_last
+    
+    return G @ M1, G @ M1_T @ G.T, G @ M_next @ G.T, Y1, Y2, G @ Y_tilde, G @ M_first @ G.T, G @ M_last @ G.T, U1_T, G @ U_tilde, G @ U_delta
+
 @partial(jit, static_argnums=(0,))
 def closed_form_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, stats):
     ''' 
@@ -183,10 +195,10 @@ def closed_form_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, stats):
 
     M1, M1_T, M_next, Y1, Y2, Y_tilde, M_first, M_last, U1_T, U_tilde, U_delta = stats
           
-    # updates first latent (average over different trials/sessions S)
-    mu0 = jnp.mean(m[:,0], axis=0)
-    # Q0 = 1/S * (M_first - jnp.outer(jnp.sum(m[:,0], axis=0), mu0)- jnp.outer(mu0, jnp.sum(m[:,0], axis=0)) + S * jnp.outer(mu0,mu0.T))
-    Q0 = (M_first - jnp.outer(jnp.sum(m[:,0], axis=0), mu0)- jnp.outer(mu0, jnp.sum(m[:,0], axis=0))) / S + jnp.outer(mu0,mu0.T)
+    # # updates first latent (average over different trials/sessions S)
+    # mu0 = jnp.mean(m[:,0], axis=0)
+    # # Q0 = 1/S * (M_first - jnp.outer(jnp.sum(m[:,0], axis=0), mu0)- jnp.outer(mu0, jnp.sum(m[:,0], axis=0)) + S * jnp.outer(mu0,mu0.T))
+    # Q0 = (M_first - jnp.outer(jnp.sum(m[:,0], axis=0), mu0)- jnp.outer(mu0, jnp.sum(m[:,0], axis=0))) / S + jnp.outer(mu0,mu0.T)
 
     # update for d
     d = (Y1 - C @ M1) / (T*S)
@@ -209,6 +221,7 @@ def closed_form_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, stats):
                                 0.5 * Qinv[:K1,K1:].T @ A[:K1,:K1] @ M1_T[:K1,:K1] - 0.5 * Qinv[K1:,:K1] @ A[:K1,:K1] @ M1_T[:K1,:K1] - 
                                 0.5 * Qinv[K1:,K1:] @ A[K1:,K1:] @ M1_T[K1:,:K1] - 0.5 * Qinv[K1:,K1:].T @ A[K1:,K1:] @ M1_T[K1:,:K1] 
                                 - Qinv[:K1,K1:].T @ B[:K1] @ U_tilde[:K1].T) @ jnp.linalg.inv(M1_T[:K1,:K1])
+    # A22 = A[K1:,K1:]
     # update for A_22
     A22 = 2 * jnp.linalg.inv(Qinv[K1:,K1:]+Qinv[K1:,K1:].T) @ (Qinv[:K1,K1:].T @ M_next[K1:,:K1].T + Qinv[K1:,K1:].T @ M_next[K1:,K1:].T - 
                                 0.5 * Qinv[:K1,K1:].T @ A[:K1,:K1] @ M1_T[:K1,K1:] - 0.5 * Qinv[K1:,:K1] @ A[:K1,:K1] @ M1_T[:K1,K1:] - 
@@ -226,10 +239,10 @@ def closed_form_M_step(K1, u, y, A, B, Q, mu0, Q0, C, d, R, m, stats):
     
     B = jnp.concatenate([B1, jnp.zeros((K-K1,M))])
     
-    # update for Q
-    Q = (M1_T - M_first + M_last + A @ M1_T @ A.T - A @ M_next - M_next.T @ A.T + B @ U1_T @ B.T - U_delta @ B.T - B @ U_delta.T + A @ U_tilde @ B.T + B @ U_tilde.T @ A.T) / ((T-1)*S)
-    Q = 0.5 * (Q + Q.T) # to ensure numerical symmetry
-    Q += 1e-8 * jnp.eye(Q.shape[0]) # to ensure no decay to 0
+    # # update for Q
+    # Q = (M1_T - M_first + M_last + A @ M1_T @ A.T - A @ M_next - M_next.T @ A.T + B @ U1_T @ B.T - U_delta @ B.T - B @ U_delta.T + A @ U_tilde @ B.T + B @ U_tilde.T @ A.T) / ((T-1)*S)
+    # Q = 0.5 * (Q + Q.T) # to ensure numerical symmetry
+    # Q += 1e-8 * jnp.eye(Q.shape[0]) # to ensure no decay to 0
     
     return A, B, Q, mu0, Q0, d, R
 
