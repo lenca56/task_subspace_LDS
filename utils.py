@@ -87,9 +87,9 @@ def generate_dynamics_A(key, eigenvalues, normal=True, distr='normal'):
     
     return A
 
-def generate_low_rank_matrix(K1, key):
+def generate_low_rank_matrix(K1, D, key):
     ''' 
-    generating low rank matrices based on Srdjan's OG paper
+    generating low rank matrices based on Srdjan's OG paper W = M @ N.T  
         - using rank 1 
         - using rank 2 oscillatory components to get complex conjugate eigenvalues
     
@@ -158,10 +158,9 @@ def generate_low_rank_matrix(K1, key):
     N_complex = jnp.concatenate([n1, n2], axis=1)  # (D, 2*Rc)
 
     M = jnp.concatenate([M_real, M_complex], axis=1)  # (D, R_real + 2*Rc)
-    N = jnp.concatenate([N_real, N_complex], axis=1)  # (D, R_real + 2*Rc)
-    W = M @ N.T   
+    N = jnp.concatenate([N_real, N_complex], axis=1)  # (D, R_real + 2*Rc) 
     
-    return W
+    return M, N
             
 def mse(z, true_z):
     '''
